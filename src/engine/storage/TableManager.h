@@ -22,6 +22,11 @@ public:
     void dropColumn  (const std::string& database, const std::string& table,
                       const std::string& colName);
 
+    /** 读取并递增 AUTO_INCREMENT 计数器，返回新值 */
+    int64_t nextAutoIncrement(const std::string& database, const std::string& table);
+
+    bool tableExists(const std::string& database, const std::string& table);
+
 private:
     std::string dataDir_;
 };
