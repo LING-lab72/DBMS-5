@@ -6,6 +6,7 @@
 #include <variant>
 
 #ifdef DBMS_WINDOWS
+#define NOMINMAX
 #include <windows.h>
 #endif
 
