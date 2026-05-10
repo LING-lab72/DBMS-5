@@ -5,9 +5,11 @@
 #include <vector>
 #include <map>
 
+class TableManager;
+
 class RecordManager {
 public:
-    explicit RecordManager(const std::string& dataDir);
+    RecordManager(const std::string& dataDir, TableManager& tblMgr);
 
     /** 插入一行，返回该行在 .trd 文件中的物理字节偏移 */
     int64_t insert(const std::string& database, const std::string& table,
@@ -15,6 +17,10 @@ public:
 
     /** 全表顺序扫描，跳过已软删除行 */
     std::vector<Row> scan(const std::string& database, const std::string& table);
+
+    /** 全表扫描，同时返回每行的物理偏移（用于 UPDATE / DELETE）*/
+    std::vector<std::pair<int64_t, Row>> scanWithOffsets(
+        const std::string& database, const std::string& table);
 
     /** 按物理偏移原地更新一行 */
     void update(const std::string& database, const std::string& table,
@@ -24,6 +30,11 @@ public:
     void remove(const std::string& database, const std::string& table,
                 int64_t offset);
 
+    /** 返回最近一次 insert 的物理偏移 */
+    int64_t lastInsertOffset() const { return lastOffset_; }
+
 private:
-    std::string dataDir_;
+    std::string   dataDir_;
+    TableManager& tblMgr_;
+    int64_t       lastOffset_ = -1;
 };

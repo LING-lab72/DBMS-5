@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <string>
 #include <vector>
 #include <variant>
@@ -51,6 +52,12 @@ struct IndexDefinition {
     std::vector<std::string> columns;
     bool                     unique = false;
 };
+
+// ============================================================
+// 权限枚举（用于用户管理和 AST）
+// ============================================================
+
+enum class Privilege { SELECT, INSERT, UPDATE, DELETE, ALL };
 
 // ============================================================
 // 错误体系
