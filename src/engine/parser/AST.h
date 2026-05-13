@@ -72,6 +72,7 @@ enum class AggFunc
 struct AggregateExpr
 {
     AggFunc func;
+    std::string tableAlias; // 可选前缀：COUNT(t.col) 中的 t
     std::string column; // "*" 表示 COUNT(*)
     std::string alias;  // AS 别名
 };
@@ -137,6 +138,7 @@ enum class NodeType
     CREATE_DATABASE,
     DROP_DATABASE,
     SHOW_DATABASES,
+    SHOW_USERS,
     USE_DATABASE,
     // DDL – 表
     CREATE_TABLE,
@@ -192,6 +194,10 @@ struct DropDatabaseNode : ASTNode
 };
 
 struct ShowDatabasesNode : ASTNode
+{
+};
+
+struct ShowUsersNode : ASTNode
 {
 };
 
@@ -290,7 +296,7 @@ struct SelectNode : ASTNode
     std::string tableAlias;
 
     std::shared_ptr<WhereExpr> where; // nullptr 表示无 WHERE
-    std::vector<std::string> groupBy;
+    std::vector<OrderByExpr> groupBy; // ascending 字段未使用
     std::shared_ptr<WhereExpr> having;
     std::vector<OrderByExpr> orderBy;
     int limit = -1; // -1 表示无 LIMIT

@@ -28,6 +28,7 @@ public:
     void init();
 
     bool userExists(const std::string& username) const;
+    std::vector<UserRecord> listUsers() const;
 
     void createUser(const std::string& username, const std::string& password);
     void dropUser(const std::string& username);

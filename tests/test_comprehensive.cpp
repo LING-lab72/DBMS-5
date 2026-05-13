@@ -76,9 +76,11 @@ static void test_user_registration_login() {
     // 重复注册应报错
     execErr("CREATE USER 'alice' IDENTIFIED BY 'other'", rootSess);
 
-    // SHOW DATABASES 确认引擎正常运行（SHOW USERS 非本引擎语法）
+    // SHOW DATABASES / SHOW USERS 确认元信息查询正常运行
     auto r = execOk("SHOW DATABASES", rootSess);
     ASSERT_TRUE(r.rowCount >= 1);
+    r = execOk("SHOW USERS", rootSess);
+    ASSERT_TRUE(r.rowCount >= 2);
 
     // 正确密码登录
     Session aliceSess;

@@ -42,11 +42,6 @@ static Session rootSess;
 static Session aliceSess;
 static Session bobSess;
 
-// 辅助：在指定会话中执行 SQL
-static QueryResult exec(const std::string& sql, Session& sess) {
-    auto r = gEng->execute(sql, sess);
-    return r;
-}
 // 辅助：执行 SQL 并断言不出错
 static QueryResult execOk(const std::string& sql, Session& sess) {
     auto r = gEng->execute(sql, sess);
@@ -81,6 +76,9 @@ static void test_user_management() {
     // 创建用户 alice
     auto r = execOk("CREATE USER 'alice' IDENTIFIED BY 'alice123'", rootSess);
     ASSERT_TRUE(r.message.find("alice") != std::string::npos);
+
+    r = execOk("SHOW USERS", rootSess);
+    ASSERT_TRUE(r.rows.size() >= (size_t)2);
 
     // 再次创建同名用户 → 应报错（DUPLICATE_KEY）
     r = execErr("CREATE USER 'alice' IDENTIFIED BY 'pass'", rootSess);
@@ -213,6 +211,9 @@ static void test_privilege_escalation() {
 
     // alice 不能 DROP USER
     execErr("DROP USER 'charlie'", aliceSess);
+
+    // alice 不能查看用户列表
+    execErr("SHOW USERS", aliceSess);
 }
 
 // ════════════════════════════════════════════════════════════════════════════

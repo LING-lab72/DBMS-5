@@ -297,6 +297,8 @@ QueryResult Executor::execute(const ASTNode &ast, Session &session)
         return execDropDatabase(static_cast<const DropDatabaseNode &>(ast), session);
     case NodeType::SHOW_DATABASES:
         return execShowDatabases(session);
+    case NodeType::SHOW_USERS:
+        return execShowUsers(session);
     case NodeType::USE_DATABASE:
         return execUseDatabase(static_cast<const UseDatabaseNode &>(ast), session);
     // DDL – 表
@@ -387,6 +389,56 @@ QueryResult Executor::execShowDatabases(Session &s)
     for (const auto &db : dbs)
     {
         r.rows.push_back({FieldValue{db}});
+    }
+    r.rowCount = static_cast<int>(r.rows.size());
+    return r;
+}
+
+QueryResult Executor::execShowUsers(Session &s)
+{
+    requireAuthenticated(s);
+    if (s.user != "root")
+        throw DBException(ErrorCode::PERMISSION_DENIED,
+                          "Only root can show users");
+
+    auto privToText = [](Privilege p) -> std::string
+    {
+        switch (p)
+        {
+        case Privilege::SELECT: return "SELECT";
+        case Privilege::INSERT: return "INSERT";
+        case Privilege::UPDATE: return "UPDATE";
+        case Privilege::DELETE: return "DELETE";
+        case Privilege::ALL: return "ALL";
+        }
+        return "SELECT";
+    };
+
+    QueryResult r;
+    r.type = QueryResult::Type::SELECT;
+    r.columns = {
+        {"User", FieldType::VARCHAR},
+        {"Privileges", FieldType::VARCHAR},
+    };
+
+    for (const auto &user : userMgr_.listUsers())
+    {
+        std::string privText;
+        for (const auto &entry : user.privileges)
+        {
+            if (!privText.empty())
+                privText += " | ";
+            privText += entry.database + "." + entry.table + ":";
+            bool first = true;
+            for (Privilege p : entry.privs)
+            {
+                if (!first)
+                    privText += ",";
+                first = false;
+                privText += privToText(p);
+            }
+        }
+        r.rows.push_back({FieldValue{user.username}, FieldValue{privText}});
     }
     r.rowCount = static_cast<int>(r.rows.size());
     return r;
@@ -694,6 +746,37 @@ static void checkFKChildAbsent(
     }
 }
 
+static bool changesReferencedParentKey(
+    TableManager &tblMgr,
+    const std::string &db,
+    const TableDefinition &parentDef,
+    const std::map<std::string, FieldValue> &oldRecord,
+    const std::map<std::string, FieldValue> &newRecord)
+{
+    auto allTables = tblMgr.listTables(db);
+    for (const auto &childTblName : allTables)
+    {
+        auto childDefOpt = tblMgr.describeTable(db, childTblName);
+        if (!childDefOpt)
+            continue;
+        for (const auto &fk : childDefOpt->foreignKeys)
+        {
+            if (fk.refTable != parentDef.name)
+                continue;
+            for (const auto &refCol : fk.refColumns)
+            {
+                auto oldIt = oldRecord.find(refCol);
+                auto newIt = newRecord.find(refCol);
+                FieldValue oldVal = oldIt != oldRecord.end() ? oldIt->second : std::monostate{};
+                FieldValue newVal = newIt != newRecord.end() ? newIt->second : std::monostate{};
+                if (!fvEqual(oldVal, newVal))
+                    return true;
+            }
+        }
+    }
+    return false;
+}
+
 // ============================================================
 // DML – INSERT
 // ============================================================
@@ -951,6 +1034,24 @@ QueryResult Executor::execSelect(const SelectNode &n, Session &s)
         return tableAlias + "." + columnName;
     };
 
+    auto resolveGroupByKey = [&](const OrderByExpr &gb) -> std::string
+    {
+        if (gb.tableAlias.empty())
+        {
+            for (const auto &sc : n.columns)
+            {
+                if (sc.kind == SelectColumn::Kind::COLUMN_REF &&
+                    !sc.alias.empty() && sc.alias == gb.columnName)
+                {
+                    validateColumnRef(sc.tableAlias, sc.columnName, "GROUP BY");
+                    return lookupKeyFor(sc.tableAlias, sc.columnName);
+                }
+            }
+        }
+        validateColumnRef(gb.tableAlias, gb.columnName, "GROUP BY");
+        return lookupKeyFor(gb.tableAlias, gb.columnName);
+    };
+
     std::function<void(const WhereExpr *, const std::string &)> validateExpr;
     validateExpr = [&](const WhereExpr *expr, const std::string &context)
     {
@@ -968,8 +1069,16 @@ QueryResult Executor::execSelect(const SelectNode &n, Session &s)
     for (const auto &ti : tables)
         validateExpr(ti.onCondition.get(), "JOIN ON");
     validateExpr(n.where.get(), "WHERE");
+    std::vector<std::string> groupByKeys;
     for (const auto &gc : n.groupBy)
-        validateColumnRef("", gc, "GROUP BY");
+        groupByKeys.push_back(resolveGroupByKey(gc));
+
+    auto aggregateLookupKey = [&](const AggregateExpr &agg) -> std::string
+    {
+        if (agg.column == "*")
+            return "*";
+        return lookupKeyFor(agg.tableAlias, agg.column);
+    };
 
     // ── 1. 构建笛卡尔积（递归）+ 应用 JOIN ON 条件 + WHERE 过滤 ────────────────
     std::vector<std::map<std::string, FieldValue>> filtered;
@@ -1032,9 +1141,9 @@ QueryResult Executor::execSelect(const SelectNode &n, Session &s)
     bool needGroup = hasAgg || !n.groupBy.empty();
 
     // ── 辅助 lambda ───────────────────────────────────────────────────
-    auto aggName = [](const AggregateExpr &agg) -> std::string
+    auto aggName = [](const AggregateExpr &agg, bool preferAlias = true) -> std::string
     {
-        if (!agg.alias.empty())
+        if (preferAlias && !agg.alias.empty())
             return agg.alias;
         std::string fn;
         switch (agg.func)
@@ -1055,7 +1164,10 @@ QueryResult Executor::execSelect(const SelectNode &n, Session &s)
             fn = "AVG";
             break;
         }
-        return fn + "(" + agg.column + ")";
+        std::string arg = agg.column;
+        if (!agg.tableAlias.empty() && agg.column != "*")
+            arg = agg.tableAlias + "." + agg.column;
+        return fn + "(" + arg + ")";
     };
 
     auto aggType = [](const AggregateExpr &agg) -> FieldType
@@ -1063,10 +1175,105 @@ QueryResult Executor::execSelect(const SelectNode &n, Session &s)
         return (agg.func == AggFunc::COUNT) ? FieldType::INTEGER : FieldType::DOUBLE;
     };
 
+    for (const auto &sc : n.columns)
+    {
+        if (sc.kind == SelectColumn::Kind::AGGREGATE && sc.aggregate.column != "*")
+            validateColumnRef(sc.aggregate.tableAlias, sc.aggregate.column, "aggregate function");
+    }
+
+    auto sameColumnRef = [&](const std::string &lhsAlias, const std::string &lhsColumn,
+                             const std::string &rhsAlias, const std::string &rhsColumn) -> bool
+    {
+        if (lhsColumn != rhsColumn)
+            return false;
+        if (lhsAlias == rhsAlias)
+            return true;
+        if (lhsAlias.empty() || rhsAlias.empty())
+            return countMatchingColumns("", lhsColumn) == 1;
+        return lookupKeyFor(lhsAlias, lhsColumn) == lookupKeyFor(rhsAlias, rhsColumn);
+    };
+
+    auto isGroupByColumn = [&](const std::string &tableAlias,
+                               const std::string &columnName) -> bool
+    {
+        if (!tableAlias.empty())
+        {
+            std::string key = lookupKeyFor(tableAlias, columnName);
+            for (const auto &groupKey : groupByKeys)
+                if (key == groupKey)
+                    return true;
+            return false;
+        }
+
+        for (size_t i = 0; i < n.groupBy.size(); ++i)
+        {
+            const auto &gc = n.groupBy[i];
+            if (sameColumnRef(tableAlias, columnName, gc.tableAlias, gc.columnName) ||
+                columnName == groupByKeys[i])
+                return true;
+        }
+        return false;
+    };
+
+    if (needGroup)
+    {
+        for (const auto &sc : n.columns)
+        {
+            if (sc.kind == SelectColumn::Kind::AGGREGATE)
+                continue;
+            if (sc.kind == SelectColumn::Kind::WILDCARD ||
+                sc.kind == SelectColumn::Kind::QUALIFIED_WILDCARD)
+            {
+                throw DBException(ErrorCode::COLUMN_INVALID,
+                                  "Wildcard cannot be selected with aggregate functions or GROUP BY");
+            }
+            if (!isGroupByColumn(sc.tableAlias, sc.columnName))
+            {
+                std::string display = sc.tableAlias.empty()
+                                          ? sc.columnName
+                                          : sc.tableAlias + "." + sc.columnName;
+                throw DBException(ErrorCode::COLUMN_INVALID,
+                                  "Column '" + display + "' must appear in GROUP BY or be used in an aggregate function");
+            }
+        }
+    }
+
+    auto isSelectedAggregateName = [&](const std::string &name) -> bool
+    {
+        for (const auto &sc : n.columns)
+            if (sc.kind == SelectColumn::Kind::AGGREGATE &&
+                (name == aggName(sc.aggregate, false) || name == sc.aggregate.alias))
+                return true;
+        return false;
+    };
+
+    std::function<void(const WhereExpr *)> validateHaving;
+    validateHaving = [&](const WhereExpr *expr)
+    {
+        if (!expr)
+            return;
+        if (expr->kind == WhereExpr::Kind::COLUMN_REF)
+        {
+            if (isGroupByColumn(expr->tableAlias, expr->columnName) ||
+                (expr->tableAlias.empty() && isSelectedAggregateName(expr->columnName)))
+                return;
+            validateColumnRef(expr->tableAlias, expr->columnName, "HAVING");
+            std::string display = expr->tableAlias.empty()
+                                      ? expr->columnName
+                                      : expr->tableAlias + "." + expr->columnName;
+            throw DBException(ErrorCode::COLUMN_INVALID,
+                              "Column '" + display + "' in HAVING must appear in GROUP BY or be used in an aggregate function");
+        }
+        validateHaving(expr->left.get());
+        validateHaving(expr->right.get());
+    };
+    validateHaving(n.having.get());
+
     // 对一组行计算单个聚合
     using RowPtrVec = std::vector<const std::map<std::string, FieldValue> *>;
     auto computeAgg = [&](const AggregateExpr &agg, const RowPtrVec &rows) -> FieldValue
     {
+        const std::string lookupKey = aggregateLookupKey(agg);
         switch (agg.func)
         {
         case AggFunc::COUNT:
@@ -1076,7 +1283,7 @@ QueryResult Executor::execSelect(const SelectNode &n, Session &s)
             int64_t cnt = 0;
             for (const auto *rm : rows)
             {
-                auto it = rm->find(agg.column);
+                auto it = rm->find(lookupKey);
                 if (it != rm->end() && !std::holds_alternative<std::monostate>(it->second))
                     ++cnt;
             }
@@ -1089,7 +1296,7 @@ QueryResult Executor::execSelect(const SelectNode &n, Session &s)
             int64_t cnt = 0;
             for (const auto *rm : rows)
             {
-                auto it = rm->find(agg.column);
+                auto it = rm->find(lookupKey);
                 if (it == rm->end())
                     continue;
                 if (std::holds_alternative<int64_t>(it->second))
@@ -1107,7 +1314,7 @@ QueryResult Executor::execSelect(const SelectNode &n, Session &s)
             FieldValue best = std::monostate{};
             for (const auto *rm : rows)
             {
-                auto it = rm->find(agg.column);
+                auto it = rm->find(lookupKey);
                 if (it == rm->end() || std::holds_alternative<std::monostate>(it->second))
                     continue;
                 if (std::holds_alternative<std::monostate>(best))
@@ -1326,9 +1533,9 @@ QueryResult Executor::execSelect(const SelectNode &n, Session &s)
             for (const auto &m : filtered)
             {
                 GroupKey gk;
-                for (const auto &gc : n.groupBy)
+                for (const auto &key : groupByKeys)
                 {
-                    auto it = m.find(gc);
+                    auto it = m.find(key);
                     gk.push_back(it != m.end() ? fvToStr(it->second) : "");
                 }
                 if (!groupMap.count(gk))
@@ -1345,11 +1552,17 @@ QueryResult Executor::execSelect(const SelectNode &n, Session &s)
 
             if (!n.groupBy.empty() && !rows.empty())
             {
-                for (const auto &gc : n.groupBy)
+                for (size_t groupIdx = 0; groupIdx < n.groupBy.size(); ++groupIdx)
                 {
-                    auto it = rows[0]->find(gc);
+                    const auto &gc = n.groupBy[groupIdx];
+                    std::string key = groupByKeys[groupIdx];
+                    auto it = rows[0]->find(key);
                     if (it != rows[0]->end())
-                        repr[gc] = it->second;
+                    {
+                        repr[key] = it->second;
+                        if (gc.tableAlias.empty() || countMatchingColumns("", gc.columnName) == 1)
+                            repr[gc.columnName] = it->second;
+                    }
                 }
             }
 
@@ -1357,7 +1570,10 @@ QueryResult Executor::execSelect(const SelectNode &n, Session &s)
             {
                 if (sc.kind != SelectColumn::Kind::AGGREGATE)
                     continue;
-                repr[aggName(sc.aggregate)] = computeAgg(sc.aggregate, rows);
+                FieldValue value = computeAgg(sc.aggregate, rows);
+                repr[aggName(sc.aggregate, false)] = value;
+                if (!sc.aggregate.alias.empty())
+                    repr[sc.aggregate.alias] = value;
             }
 
             if (n.having && !eval.evaluate(*n.having, repr))
@@ -1383,9 +1599,33 @@ QueryResult Executor::execSelect(const SelectNode &n, Session &s)
     // ── 5. ORDER BY ───────────────────────────────────────────────────
     if (!n.orderBy.empty())
     {
+        auto resolveOrderByKey = [&](const OrderByExpr &ob) -> std::string
+        {
+            if (ob.tableAlias.empty())
+            {
+                for (const auto &sc : n.columns)
+                {
+                    if (sc.kind == SelectColumn::Kind::AGGREGATE)
+                    {
+                        if (ob.columnName == sc.aggregate.alias)
+                            return sc.aggregate.alias;
+                        if (ob.columnName == aggName(sc.aggregate, false))
+                            return aggName(sc.aggregate, false);
+                    }
+                    else if (sc.kind == SelectColumn::Kind::COLUMN_REF &&
+                             !sc.alias.empty() && ob.columnName == sc.alias)
+                    {
+                        return lookupKeyFor(sc.tableAlias, sc.columnName);
+                    }
+                }
+            }
+            validateColumnRef(ob.tableAlias, ob.columnName, "ORDER BY");
+            return lookupKeyFor(ob.tableAlias, ob.columnName);
+        };
+
         for (const auto& ob : n.orderBy)
         {
-            validateColumnRef(ob.tableAlias, ob.columnName, "ORDER BY");
+            resolveOrderByKey(ob);
         }
         std::stable_sort(filtered.begin(), filtered.end(),
                          [&](const std::map<std::string, FieldValue> &a,
@@ -1394,7 +1634,7 @@ QueryResult Executor::execSelect(const SelectNode &n, Session &s)
                              for (const auto &ob : n.orderBy)
                              {
                                  // 尝试 qualified 和 unqualified 查找
-                                 std::string lookupKey = lookupKeyFor(ob.tableAlias, ob.columnName);
+                                 std::string lookupKey = resolveOrderByKey(ob);
 
                                  auto ia = a.find(lookupKey);
                                  if (ia == a.end() && ob.tableAlias.empty())
@@ -1634,12 +1874,16 @@ QueryResult Executor::execUpdate(const UpdateNode &n, Session &s)
             }
         }
 
+        auto oldMap = rowToMap(def, row);
+
+        if (changesReferencedParentKey(tblMgr_, db, def, oldMap, m))
+            checkFKChildAbsent(tblMgr_, recMgr_, db, def, oldMap);
+
         // UNIQUE / PK 唯一性检查（排除自身行）
         checkUniqueConstraints(recMgr_, db, n.table, def, m, offset);
 
         // FK parent 存在检查 + 索引维护
         checkFKParentExists(tblMgr_, recMgr_, db, def, m);
-        auto oldMap = rowToMap(def, row);
         // 事务撤销日志（保存旧行）
         if (!s.transactionId.empty()) {
             walMgr_.logUpdate(s.transactionId, db, n.table, offset, oldMap);
@@ -1927,6 +2171,20 @@ QueryResult Executor::execBackupDatabase(const BackupDatabaseNode& n, Session& s
 
         out << genCreateTableSQL(def) << ";\n\n";
         ++stmtCount;
+
+        auto indexes = idxMgr_.listIndexes(db, tableName);
+        for (const auto& idx : indexes) {
+            out << "CREATE ";
+            if (idx.unique) out << "UNIQUE ";
+            out << "INDEX " << idx.name << " ON " << tableName << " (";
+            for (size_t i = 0; i < idx.columns.size(); ++i) {
+                if (i) out << ", ";
+                out << idx.columns[i];
+            }
+            out << ");\n";
+            ++stmtCount;
+        }
+        if (!indexes.empty()) out << "\n";
 
         auto rows = recMgr_.scan(db, tableName);
         for (const auto& row : rows) {

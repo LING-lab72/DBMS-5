@@ -1,0 +1,195 @@
+#include "AdminPanel.h"
+
+#include <QCheckBox>
+#include <QComboBox>
+#include <QFormLayout>
+#include <QGroupBox>
+#include <QHBoxLayout>
+#include <QLineEdit>
+#include <QPushButton>
+#include <QVBoxLayout>
+
+AdminPanel::AdminPanel(QWidget *parent)
+    : QWidget(parent),
+      databaseEdit_(new QLineEdit(this)),
+      tableEdit_(new QLineEdit(this)),
+      columnEdit_(new QLineEdit(this)),
+      columnTypeEdit_(new QLineEdit(this)),
+      defaultEdit_(new QLineEdit(this)),
+      notNullCheck_(new QCheckBox(tr("NOT NULL"), this)),
+      indexEdit_(new QLineEdit(this)),
+      indexColumnsEdit_(new QLineEdit(this)),
+      userEdit_(new QLineEdit(this)),
+      passwordEdit_(new QLineEdit(this)),
+      privilegeTargetDbEdit_(new QLineEdit(this)),
+      privilegeTargetTableEdit_(new QLineEdit(this)),
+      privilegeCombo_(new QComboBox(this))
+{
+    databaseEdit_->setPlaceholderText(tr("database"));
+    tableEdit_->setPlaceholderText(tr("table"));
+    columnEdit_->setPlaceholderText(tr("column"));
+    columnTypeEdit_->setPlaceholderText(tr("INT / VARCHAR(64) / DOUBLE"));
+    defaultEdit_->setPlaceholderText(tr("optional SQL literal"));
+    indexEdit_->setPlaceholderText(tr("index name"));
+    indexColumnsEdit_->setPlaceholderText(tr("col1, col2"));
+
+    auto *schemaForm = new QFormLayout;
+    schemaForm->addRow(tr("Database"), databaseEdit_);
+    schemaForm->addRow(tr("Table"), tableEdit_);
+    schemaForm->addRow(tr("Column"), columnEdit_);
+    schemaForm->addRow(tr("Type"), columnTypeEdit_);
+    schemaForm->addRow(tr("Default"), defaultEdit_);
+    schemaForm->addRow(QString(), notNullCheck_);
+    schemaForm->addRow(tr("Index"), indexEdit_);
+    schemaForm->addRow(tr("Index Columns"), indexColumnsEdit_);
+
+    auto *useDbButton = new QPushButton(tr("Use DB"), this);
+    auto *createDbButton = new QPushButton(tr("Create DB"), this);
+    auto *dropDbButton = new QPushButton(tr("Drop DB"), this);
+    auto *addColumnButton = new QPushButton(tr("Add Column"), this);
+    auto *modifyColumnButton = new QPushButton(tr("Modify Column"), this);
+    auto *dropColumnButton = new QPushButton(tr("Drop Column"), this);
+    auto *createIndexButton = new QPushButton(tr("Create Index"), this);
+    auto *dropIndexButton = new QPushButton(tr("Drop Index"), this);
+
+    connect(useDbButton, &QPushButton::clicked, this, [this]() {
+        emitIfNotEmpty(QStringLiteral("USE %1").arg(databaseEdit_->text().trimmed()));
+    });
+    connect(createDbButton, &QPushButton::clicked, this, [this]() {
+        emitIfNotEmpty(QStringLiteral("CREATE DATABASE %1").arg(databaseEdit_->text().trimmed()));
+    });
+    connect(dropDbButton, &QPushButton::clicked, this, [this]() {
+        emitIfNotEmpty(QStringLiteral("DROP DATABASE %1").arg(databaseEdit_->text().trimmed()));
+    });
+    connect(addColumnButton, &QPushButton::clicked, this, [this]() {
+        QString sql = QStringLiteral("ALTER TABLE %1 ADD COLUMN %2 %3")
+                          .arg(targetName(), columnEdit_->text().trimmed(), columnTypeEdit_->text().trimmed());
+        if (notNullCheck_->isChecked())
+            sql += QStringLiteral(" NOT NULL");
+        if (!defaultEdit_->text().trimmed().isEmpty())
+            sql += QStringLiteral(" DEFAULT ") + defaultEdit_->text().trimmed();
+        emitIfNotEmpty(sql);
+    });
+    connect(modifyColumnButton, &QPushButton::clicked, this, [this]() {
+        QString sql = QStringLiteral("ALTER TABLE %1 MODIFY COLUMN %2 %3")
+                          .arg(targetName(), columnEdit_->text().trimmed(), columnTypeEdit_->text().trimmed());
+        if (notNullCheck_->isChecked())
+            sql += QStringLiteral(" NOT NULL");
+        emitIfNotEmpty(sql);
+    });
+    connect(dropColumnButton, &QPushButton::clicked, this, [this]() {
+        emitIfNotEmpty(QStringLiteral("ALTER TABLE %1 DROP COLUMN %2")
+                           .arg(targetName(), columnEdit_->text().trimmed()));
+    });
+    connect(createIndexButton, &QPushButton::clicked, this, [this]() {
+        emitIfNotEmpty(QStringLiteral("CREATE INDEX %1 ON %2 (%3)")
+                           .arg(indexEdit_->text().trimmed(), targetName(), indexColumnsEdit_->text().trimmed()));
+    });
+    connect(dropIndexButton, &QPushButton::clicked, this, [this]() {
+        emitIfNotEmpty(QStringLiteral("DROP INDEX %1 ON %2")
+                           .arg(indexEdit_->text().trimmed(), targetName()));
+    });
+
+    auto *schemaButtons = new QHBoxLayout;
+    schemaButtons->addWidget(useDbButton);
+    schemaButtons->addWidget(createDbButton);
+    schemaButtons->addWidget(dropDbButton);
+    schemaButtons->addWidget(addColumnButton);
+    schemaButtons->addWidget(modifyColumnButton);
+    schemaButtons->addWidget(dropColumnButton);
+    schemaButtons->addWidget(createIndexButton);
+    schemaButtons->addWidget(dropIndexButton);
+
+    auto *schemaGroup = new QGroupBox(tr("Schema"), this);
+    auto *schemaLayout = new QVBoxLayout(schemaGroup);
+    schemaLayout->addLayout(schemaForm);
+    schemaLayout->addLayout(schemaButtons);
+
+    passwordEdit_->setEchoMode(QLineEdit::Password);
+    privilegeTargetDbEdit_->setPlaceholderText(tr("* or database"));
+    privilegeTargetTableEdit_->setPlaceholderText(tr("* or table"));
+    privilegeCombo_->addItems({QStringLiteral("ALL"), QStringLiteral("SELECT"), QStringLiteral("INSERT"),
+                               QStringLiteral("UPDATE"), QStringLiteral("DELETE")});
+
+    auto *userForm = new QFormLayout;
+    userForm->addRow(tr("User"), userEdit_);
+    userForm->addRow(tr("Password"), passwordEdit_);
+    userForm->addRow(tr("Privilege"), privilegeCombo_);
+    userForm->addRow(tr("Target DB"), privilegeTargetDbEdit_);
+    userForm->addRow(tr("Target Table"), privilegeTargetTableEdit_);
+
+    auto *createUserButton = new QPushButton(tr("Create User"), this);
+    auto *dropUserButton = new QPushButton(tr("Drop User"), this);
+    auto *grantButton = new QPushButton(tr("Grant"), this);
+    auto *revokeButton = new QPushButton(tr("Revoke"), this);
+    auto *refreshButton = new QPushButton(tr("Refresh Tree"), this);
+
+    connect(createUserButton, &QPushButton::clicked, this, [this]() {
+        emitIfNotEmpty(QStringLiteral("CREATE USER %1 IDENTIFIED BY %2")
+                           .arg(quoteString(userEdit_->text().trimmed()),
+                                quoteString(passwordEdit_->text())));
+    });
+    connect(dropUserButton, &QPushButton::clicked, this, [this]() {
+        emitIfNotEmpty(QStringLiteral("DROP USER %1").arg(quoteString(userEdit_->text().trimmed())));
+    });
+    connect(grantButton, &QPushButton::clicked, this, [this]() {
+        emitIfNotEmpty(QStringLiteral("GRANT %1 ON %2.%3 TO %4")
+                           .arg(privilegeCombo_->currentText(),
+                                privilegeTargetDbEdit_->text().trimmed().isEmpty() ? QStringLiteral("*") : privilegeTargetDbEdit_->text().trimmed(),
+                                privilegeTargetTableEdit_->text().trimmed().isEmpty() ? QStringLiteral("*") : privilegeTargetTableEdit_->text().trimmed(),
+                                quoteString(userEdit_->text().trimmed())));
+    });
+    connect(revokeButton, &QPushButton::clicked, this, [this]() {
+        emitIfNotEmpty(QStringLiteral("REVOKE %1 ON %2.%3 FROM %4")
+                           .arg(privilegeCombo_->currentText(),
+                                privilegeTargetDbEdit_->text().trimmed().isEmpty() ? QStringLiteral("*") : privilegeTargetDbEdit_->text().trimmed(),
+                                privilegeTargetTableEdit_->text().trimmed().isEmpty() ? QStringLiteral("*") : privilegeTargetTableEdit_->text().trimmed(),
+                                quoteString(userEdit_->text().trimmed())));
+    });
+    connect(refreshButton, &QPushButton::clicked, this, &AdminPanel::refreshRequested);
+
+    auto *userButtons = new QHBoxLayout;
+    userButtons->addWidget(createUserButton);
+    userButtons->addWidget(dropUserButton);
+    userButtons->addWidget(grantButton);
+    userButtons->addWidget(revokeButton);
+    userButtons->addWidget(refreshButton);
+
+    auto *userGroup = new QGroupBox(tr("Users / Privileges"), this);
+    auto *userLayout = new QVBoxLayout(userGroup);
+    userLayout->addLayout(userForm);
+    userLayout->addLayout(userButtons);
+
+    auto *layout = new QVBoxLayout(this);
+    layout->addWidget(schemaGroup);
+    layout->addWidget(userGroup);
+    layout->addStretch();
+}
+
+void AdminPanel::setCurrentTable(const QString &database, const QString &table)
+{
+    databaseEdit_->setText(database);
+    tableEdit_->setText(table);
+    privilegeTargetDbEdit_->setText(database);
+    privilegeTargetTableEdit_->setText(table);
+}
+
+QString AdminPanel::targetName() const
+{
+    const QString db = databaseEdit_->text().trimmed();
+    const QString table = tableEdit_->text().trimmed();
+    return db.isEmpty() ? table : db + QStringLiteral(".") + table;
+}
+
+QString AdminPanel::quoteString(const QString &value) const
+{
+    QString escaped = value;
+    escaped.replace(QStringLiteral("'"), QStringLiteral("''"));
+    return QStringLiteral("'") + escaped + QStringLiteral("'");
+}
+
+void AdminPanel::emitIfNotEmpty(const QString &sql)
+{
+    if (!sql.trimmed().isEmpty())
+        emit sqlRequested(sql.trimmed());
+}
