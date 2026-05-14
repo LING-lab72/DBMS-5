@@ -39,6 +39,7 @@ private:
     QueryResult execCreateDatabase(const CreateDatabaseNode &n, Session &s);
     QueryResult execDropDatabase(const DropDatabaseNode &n, Session &s);
     QueryResult execShowDatabases(Session &s);
+    QueryResult execShowUsers(Session &s);
     QueryResult execUseDatabase(const UseDatabaseNode &n, Session &s);
 
     // DDL – 表

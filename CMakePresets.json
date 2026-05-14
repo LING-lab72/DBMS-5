@@ -19,12 +19,33 @@
         "CMAKE_BUILD_TYPE": "Debug",
         "CMAKE_CXX_COMPILER": "${sourceDir}/tools/mingw-gpp-wrapper.cmd"
       }
+    },
+    {
+      "name": "windows-msys2-ucrt64-qt",
+      "displayName": "Windows MSYS2 UCRT64 Qt6 Ninja",
+      "description": "Build the optional Qt Widgets frontend with the MSYS2 UCRT64 Qt6 package.",
+      "inherits": "windows-msys2-ucrt64",
+      "binaryDir": "${sourceDir}/build-qt-msys",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_CXX_COMPILER": "${sourceDir}/tools/mingw-gpp-wrapper.cmd",
+        "CMAKE_PREFIX_PATH": "C:/msys64/ucrt64",
+        "DBMS_BUILD_QT": "ON",
+        "DBMS_BUILD_TESTS": "OFF"
+      }
     }
   ],
   "buildPresets": [
     {
       "name": "windows-msys2-ucrt64",
       "configurePreset": "windows-msys2-ucrt64"
+    },
+    {
+      "name": "windows-msys2-ucrt64-qt",
+      "configurePreset": "windows-msys2-ucrt64-qt",
+      "targets": [
+        "dbms_qt"
+      ]
     }
   ],
   "testPresets": [

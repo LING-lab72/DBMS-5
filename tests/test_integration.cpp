@@ -12,6 +12,8 @@
 #include <stdexcept>
 #include <cmath>
 #include <chrono>
+#include <fstream>
+#include <iterator>
 
 namespace fs = std::filesystem;
 
@@ -534,7 +536,176 @@ static void test_join_boundary_errors() {
     exec("DROP TABLE ja");
 }
 
-// ── 22. JOIN benchmark baseline ──────────────────────────────────────────────
+// ── 22. Qualified aggregate and GROUP BY across joined tables ───────────────
+static void test_join_qualified_aggregate_group_by() {
+    std::cout << "[test_join_qualified_aggregate_group_by]\n";
+
+    exec("CREATE TABLE agg_users (uid INT PRIMARY KEY, region VARCHAR(20))");
+    exec("CREATE TABLE agg_orders (oid INT PRIMARY KEY, user_id INT, amount DOUBLE)");
+
+    exec("INSERT INTO agg_users (uid, region) VALUES (1, 'East')");
+    exec("INSERT INTO agg_users (uid, region) VALUES (2, 'West')");
+    exec("INSERT INTO agg_users (uid, region) VALUES (3, 'East')");
+    exec("INSERT INTO agg_orders (oid, user_id, amount) VALUES (1, 1, 100.0)");
+    exec("INSERT INTO agg_orders (oid, user_id, amount) VALUES (2, 1, 50.0)");
+    exec("INSERT INTO agg_orders (oid, user_id, amount) VALUES (3, 2, 75.0)");
+    exec("INSERT INTO agg_orders (oid, user_id, amount) VALUES (4, 3, 25.0)");
+
+    auto r = exec("SELECT u.region, COUNT(o.oid), SUM(o.amount) "
+                  "FROM agg_users u JOIN agg_orders o ON u.uid = o.user_id "
+                  "GROUP BY u.region HAVING COUNT(o.oid) >= 2 "
+                  "ORDER BY u.region ASC");
+    ASSERT_EQ(r.type, QueryResult::Type::SELECT);
+    ASSERT_EQ(r.rows.size(), (size_t)1);
+    ASSERT_EQ(fvs(r.rows[0][0]), "East");
+    ASSERT_EQ(fvs(r.rows[0][1]), "3");
+    ASSERT_EQ(fvs(r.rows[0][2]), "175.000000");
+
+    r = exec("SELECT u.region AS region_name, COUNT(o.oid) AS cnt "
+             "FROM agg_users u JOIN agg_orders o ON u.uid = o.user_id "
+             "GROUP BY u.region ORDER BY cnt DESC");
+    ASSERT_EQ(r.type, QueryResult::Type::SELECT);
+    ASSERT_EQ(r.rows.size(), (size_t)2);
+    ASSERT_EQ(fvs(r.rows[0][0]), "East");
+    ASSERT_EQ(fvs(r.rows[0][1]), "3");
+
+    r = exec("SELECT u.region AS region_name, COUNT(o.oid) AS cnt "
+             "FROM agg_users u JOIN agg_orders o ON u.uid = o.user_id "
+             "GROUP BY region_name HAVING region_name = 'East'");
+    ASSERT_EQ(r.type, QueryResult::Type::SELECT);
+    ASSERT_EQ(r.rows.size(), (size_t)1);
+    ASSERT_EQ(fvs(r.rows[0][0]), "East");
+
+    r = execExpectError("SELECT u.region, COUNT(*) FROM agg_users u "
+                        "JOIN agg_orders o ON u.uid = o.user_id "
+                        "GROUP BY u.region HAVING o.amount > 50");
+    ASSERT_TRUE(r.message.find("HAVING") != std::string::npos);
+
+    r = execExpectError("SELECT u.region, o.amount, COUNT(*) FROM agg_users u "
+                        "JOIN agg_orders o ON u.uid = o.user_id "
+                        "GROUP BY u.region");
+    ASSERT_TRUE(r.message.find("GROUP BY") != std::string::npos);
+
+    r = execExpectError("SELECT SUM(uid) FROM agg_users u, agg_users v");
+    ASSERT_TRUE(r.message.find("Ambiguous") != std::string::npos);
+
+    exec("DROP TABLE agg_orders");
+    exec("DROP TABLE agg_users");
+}
+
+// ── 23. UPDATE must preserve referenced parent keys ─────────────────────────
+static void test_update_referenced_parent_key() {
+    std::cout << "[test_update_referenced_parent_key]\n";
+
+    exec("CREATE TABLE fk_parent_upd (id INT PRIMARY KEY, name VARCHAR(20))");
+    exec("CREATE TABLE fk_child_upd (id INT PRIMARY KEY, parent_id INT, "
+         "CONSTRAINT fk_upd FOREIGN KEY (parent_id) REFERENCES fk_parent_upd(id))");
+
+    exec("INSERT INTO fk_parent_upd (id, name) VALUES (1, 'P1')");
+    exec("INSERT INTO fk_child_upd (id, parent_id) VALUES (1, 1)");
+
+    auto r = execExpectError("UPDATE fk_parent_upd SET id = 2 WHERE id = 1");
+    ASSERT_TRUE(r.message.find("foreign key") != std::string::npos ||
+                r.message.find("Foreign key") != std::string::npos);
+
+    r = exec("UPDATE fk_parent_upd SET name = 'P1-renamed' WHERE id = 1");
+    ASSERT_TRUE(r.type != QueryResult::Type::ERROR);
+
+    exec("DROP TABLE fk_child_upd");
+    exec("DROP TABLE fk_parent_upd");
+}
+
+// ── 24. Aggregate semantic boundary checks ─────────────────────────────────
+static void test_aggregate_semantic_boundaries() {
+    std::cout << "[test_aggregate_semantic_boundaries]\n";
+
+    exec("CREATE TABLE agg_sem (id INT, dept VARCHAR(20), salary DOUBLE)");
+    exec("INSERT INTO agg_sem (id, dept, salary) VALUES (1, 'A', 10.0)");
+    exec("INSERT INTO agg_sem (id, dept, salary) VALUES (2, 'A', 20.0)");
+    exec("INSERT INTO agg_sem (id, dept, salary) VALUES (3, 'B', 5.0)");
+
+    auto r = execExpectError("SELECT dept, salary, COUNT(*) FROM agg_sem GROUP BY dept");
+    ASSERT_TRUE(r.message.find("GROUP BY") != std::string::npos);
+
+    r = execExpectError("SELECT dept, COUNT(*) FROM agg_sem GROUP BY dept HAVING salary > 10");
+    ASSERT_TRUE(r.message.find("HAVING") != std::string::npos);
+
+    r = execExpectError("SELECT dept, COUNT(*) FROM agg_sem");
+    ASSERT_TRUE(r.message.find("GROUP BY") != std::string::npos);
+
+    r = exec("SELECT dept, COUNT(*) AS cnt FROM agg_sem GROUP BY dept HAVING cnt >= 2 ORDER BY cnt DESC");
+    ASSERT_EQ(r.type, QueryResult::Type::SELECT);
+    ASSERT_EQ(r.rows.size(), (size_t)1);
+    ASSERT_EQ(fvs(r.rows[0][0]), "A");
+    ASSERT_EQ(fvs(r.rows[0][1]), "2");
+
+    exec("DROP TABLE agg_sem");
+}
+
+// ── 25. Backup should preserve secondary indexes ───────────────────────────
+static void test_backup_restore_preserves_indexes() {
+    std::cout << "[test_backup_restore_preserves_indexes]\n";
+
+    exec("CREATE DATABASE idxbackupdb");
+    exec("USE idxbackupdb");
+    exec("CREATE TABLE indexed_items (id INT PRIMARY KEY, sku VARCHAR(20), qty INT)");
+    exec("CREATE UNIQUE INDEX idx_sku_backup ON indexed_items (sku)");
+    exec("INSERT INTO indexed_items (id, sku, qty) VALUES (1, 'SKU-1', 5)");
+
+    std::string backupFile = DATA_DIR + "/idx_backup.sql";
+    auto r = exec("BACKUP DATABASE idxbackupdb TO '" + backupFile + "'");
+    ASSERT_TRUE(r.type != QueryResult::Type::ERROR);
+
+    {
+        std::ifstream in(backupFile);
+        std::string sql((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        ASSERT_TRUE(sql.find("CREATE UNIQUE INDEX idx_sku_backup") != std::string::npos);
+    }
+
+    exec("DROP TABLE indexed_items");
+    exec("DROP DATABASE idxbackupdb");
+    r = exec("RESTORE DATABASE idxbackupdb FROM '" + backupFile + "'");
+    ASSERT_TRUE(r.type != QueryResult::Type::ERROR);
+
+    exec("USE idxbackupdb");
+    r = execExpectError("INSERT INTO indexed_items (id, sku, qty) VALUES (2, 'SKU-1', 7)");
+    ASSERT_TRUE(r.message.find("Duplicate") != std::string::npos);
+
+    exec("DROP TABLE indexed_items");
+    exec("DROP DATABASE idxbackupdb");
+    fs::remove(backupFile);
+    exec("USE testdb");
+}
+
+// ── 26. Transaction flow boundaries ─────────────────────────────────────────
+static void test_transaction_flow_boundaries() {
+    std::cout << "[test_transaction_flow_boundaries]\n";
+
+    exec("CREATE TABLE tx_flow (id INT PRIMARY KEY, label VARCHAR(20))");
+
+    auto r = exec("BEGIN");
+    ASSERT_TRUE(r.type != QueryResult::Type::ERROR);
+    r = execExpectError("BEGIN");
+    ASSERT_TRUE(r.message.find("Transaction already active") != std::string::npos);
+    exec("INSERT INTO tx_flow (id, label) VALUES (1, 'rollback')");
+    r = exec("ROLLBACK");
+    ASSERT_TRUE(r.type != QueryResult::Type::ERROR);
+    r = exec("SELECT * FROM tx_flow WHERE id = 1");
+    ASSERT_EQ(r.rows.size(), (size_t)0);
+
+    exec("BEGIN");
+    exec("INSERT INTO tx_flow (id, label) VALUES (2, 'commit')");
+    exec("COMMIT");
+    r = exec("SELECT * FROM tx_flow WHERE id = 2");
+    ASSERT_EQ(r.rows.size(), (size_t)1);
+
+    r = exec("COMMIT");
+    ASSERT_TRUE(r.type != QueryResult::Type::ERROR);
+
+    exec("DROP TABLE tx_flow");
+}
+
+// ── 27. JOIN benchmark baseline ──────────────────────────────────────────────
 static void test_join_benchmark_baseline() {
     std::cout << "[test_join_benchmark_baseline]\n";
 
@@ -642,6 +813,11 @@ int main() {
         test_qualified_wildcard();
         test_left_join_unsupported();
         test_join_boundary_errors();
+        test_join_qualified_aggregate_group_by();
+        test_update_referenced_parent_key();
+        test_aggregate_semantic_boundaries();
+        test_backup_restore_preserves_indexes();
+        test_transaction_flow_boundaries();
         test_join_benchmark_baseline();
         test_restore();
         cleanup();

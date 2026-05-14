@@ -270,6 +270,10 @@ bool UserManager::userExists(const std::string& username) const {
     return findUser(username) != nullptr;
 }
 
+std::vector<UserRecord> UserManager::listUsers() const {
+    return users_;
+}
+
 void UserManager::createUser(const std::string& username,
                               const std::string& password) {
     if (username.empty())

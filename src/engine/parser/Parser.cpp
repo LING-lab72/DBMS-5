@@ -1,6 +1,7 @@
 #include "Parser.h"
 #include <algorithm>
 #include <cassert>
+#include <cctype>
 
 // ============================================================
 // 内部递归下降解析器
@@ -8,14 +9,6 @@
 
 namespace
 {
-
-    static std::string toUpper(std::string s)
-    {
-        std::transform(s.begin(), s.end(), s.begin(),
-                       [](unsigned char c)
-                       { return std::toupper(c); });
-        return s;
-    }
 
     class ParserImpl
     {
@@ -323,7 +316,7 @@ namespace
             std::string first = parseIdent();
             if (check(TokenType::LPAREN))
             {
-                // Aggregate function call: MAX(salary) → stored as column "MAX(salary)"
+                // Aggregate function call: MAX(salary) -> stored as column "MAX(salary)"
                 advance(); // consume '('
                 std::string argCol;
                 if (check(TokenType::STAR))
@@ -333,7 +326,11 @@ namespace
                 }
                 else
                 {
-                    argCol = parseIdent();
+                    std::string argFirst = parseIdent();
+                    if (match(TokenType::DOT))
+                        argCol = argFirst + "." + parseIdent();
+                    else
+                        argCol = argFirst;
                 }
                 expect(TokenType::RPAREN, "Expected ')' after aggregate argument");
                 colExpr->columnName = first + "(" + argCol + ")";
@@ -576,7 +573,18 @@ namespace
                     if (match(TokenType::STAR))
                         sc.aggregate.column = "*";
                     else
-                        sc.aggregate.column = parseIdent();
+                    {
+                        std::string argFirst = parseIdent();
+                        if (match(TokenType::DOT))
+                        {
+                            sc.aggregate.tableAlias = argFirst;
+                            sc.aggregate.column = parseIdent();
+                        }
+                        else
+                        {
+                            sc.aggregate.column = argFirst;
+                        }
+                    }
                     expect(TokenType::RPAREN, "Expected ')'");
                     if (match(TokenType::AS))
                         sc.aggregate.alias = sc.alias = parseIdent();
@@ -892,8 +900,21 @@ namespace
                 n->type = NodeType::SHOW_TABLES;
                 return n;
             }
+            if (cur().type == TokenType::IDENTIFIER)
+            {
+                std::string word = cur().value;
+                std::transform(word.begin(), word.end(), word.begin(),
+                               [](unsigned char c) { return std::toupper(c); });
+                if (word == "USERS")
+                {
+                    advance();
+                    auto n = std::make_unique<ShowUsersNode>();
+                    n->type = NodeType::SHOW_USERS;
+                    return n;
+                }
+            }
             throw DBException(ErrorCode::SQL_SYNTAX_ERROR,
-                              "Expected DATABASES or TABLES after SHOW");
+                              "Expected DATABASES, TABLES, or USERS after SHOW");
         }
 
         // ---- USE ----
@@ -1168,7 +1189,21 @@ namespace
             {
                 advance();
                 expect(TokenType::BY, "Expected BY after GROUP");
-                n->groupBy = parseIdentList();
+                do
+                {
+                    OrderByExpr gb;
+                    std::string first = parseIdent();
+                    if (match(TokenType::DOT))
+                    {
+                        gb.tableAlias = first;
+                        gb.columnName = parseIdent();
+                    }
+                    else
+                    {
+                        gb.columnName = first;
+                    }
+                    n->groupBy.push_back(gb);
+                } while (match(TokenType::COMMA));
             }
             if (match(TokenType::HAVING))
                 n->having = parseWhereExpr();

@@ -15,33 +15,6 @@ static int passed = 0, failed = 0;
 
 #define ASSERT_TRUE(expr) ASSERT_EQ((expr), true)
 
-// ---- helpers ----
-static std::string typeName(TokenType t) {
-    switch(t) {
-#define C(x) case TokenType::x: return #x;
-        C(CREATE) C(DROP) C(DATABASE) C(TABLE) C(SHOW) C(DATABASES) C(TABLES)
-        C(USE) C(DESCRIBE) C(ALTER) C(ADD) C(MODIFY) C(COLUMN)
-        C(INSERT) C(INTO) C(VALUES) C(SELECT) C(FROM) C(WHERE)
-        C(UPDATE) C(SET) C(DELETE) C(INDEX)
-        C(PRIMARY) C(KEY) C(FOREIGN) C(REFERENCES) C(UNIQUE) C(NOT) C(NULL_KW)
-        C(DEFAULT) C(AUTO_INCREMENT) C(INT_KW) C(INTEGER_KW)
-        C(DOUBLE_KW) C(FLOAT_KW) C(VARCHAR_KW) C(BOOL_KW) C(DATETIME_KW) C(CONSTRAINT)
-        C(ORDER) C(BY) C(ASC) C(DESC) C(LIMIT) C(OFFSET) C(GROUP) C(HAVING) C(AS)
-        C(AND) C(OR) C(IN) C(LIKE) C(IS) C(BETWEEN)
-        C(COUNT) C(SUM) C(MAX) C(MIN) C(AVG) C(IF) C(EXISTS)
-        C(BEGIN) C(COMMIT) C(ROLLBACK) C(TRANSACTION)
-        C(GRANT) C(REVOKE) C(ON) C(TO) C(WITH) C(OPTION) C(ALL) C(PRIVILEGES)
-        C(USER) C(PASSWORD)
-        C(EQ) C(NEQ) C(LT) C(LE) C(GT) C(GE)
-        C(PLUS) C(MINUS) C(STAR) C(SLASH) C(PERCENT)
-        C(LPAREN) C(RPAREN) C(COMMA) C(SEMICOLON) C(DOT) C(ASSIGN)
-        C(INT_LITERAL) C(DOUBLE_LITERAL) C(STRING_LITERAL) C(BOOL_LITERAL) C(NULL_LITERAL)
-        C(IDENTIFIER) C(EOF_TOKEN) C(UNKNOWN)
-#undef C
-        default: return "?";
-    }
-}
-
 static std::vector<Token> lex(const std::string& sql) {
     Lexer l;
     auto toks = l.tokenize(sql);
@@ -61,6 +34,63 @@ static void test_keywords() {
     ASSERT_EQ(t[1].type, TokenType::DATABASE);
     ASSERT_EQ(t[2].type, TokenType::IDENTIFIER);
     ASSERT_EQ(t[2].value, std::string("mydb"));
+}
+
+static void test_all_keywords_are_tokenized() {
+    const std::vector<std::pair<std::string, TokenType>> cases = {
+        {"CREATE", TokenType::CREATE}, {"DROP", TokenType::DROP},
+        {"DATABASE", TokenType::DATABASE}, {"TABLE", TokenType::TABLE},
+        {"INDEX", TokenType::INDEX}, {"SHOW", TokenType::SHOW},
+        {"DATABASES", TokenType::DATABASES}, {"TABLES", TokenType::TABLES},
+        {"USE", TokenType::USE}, {"DESCRIBE", TokenType::DESCRIBE},
+        {"ALTER", TokenType::ALTER}, {"ADD", TokenType::ADD},
+        {"MODIFY", TokenType::MODIFY}, {"COLUMN", TokenType::COLUMN},
+        {"INSERT", TokenType::INSERT}, {"INTO", TokenType::INTO},
+        {"VALUES", TokenType::VALUES}, {"SELECT", TokenType::SELECT},
+        {"DISTINCT", TokenType::DISTINCT}, {"FROM", TokenType::FROM},
+        {"WHERE", TokenType::WHERE}, {"UPDATE", TokenType::UPDATE},
+        {"SET", TokenType::SET}, {"DELETE", TokenType::DELETE},
+        {"PRIMARY", TokenType::PRIMARY}, {"KEY", TokenType::KEY},
+        {"FOREIGN", TokenType::FOREIGN}, {"REFERENCES", TokenType::REFERENCES},
+        {"UNIQUE", TokenType::UNIQUE}, {"NOT", TokenType::NOT},
+        {"NULL", TokenType::NULL_KW}, {"DEFAULT", TokenType::DEFAULT},
+        {"AUTO_INCREMENT", TokenType::AUTO_INCREMENT},
+        {"INT", TokenType::INT_KW}, {"INTEGER", TokenType::INTEGER_KW},
+        {"DOUBLE", TokenType::DOUBLE_KW}, {"FLOAT", TokenType::FLOAT_KW},
+        {"VARCHAR", TokenType::VARCHAR_KW}, {"BOOL", TokenType::BOOL_KW},
+        {"BOOLEAN", TokenType::BOOL_KW}, {"DATETIME", TokenType::DATETIME_KW},
+        {"CONSTRAINT", TokenType::CONSTRAINT}, {"ORDER", TokenType::ORDER},
+        {"BY", TokenType::BY}, {"ASC", TokenType::ASC},
+        {"DESC", TokenType::DESC}, {"LIMIT", TokenType::LIMIT},
+        {"OFFSET", TokenType::OFFSET}, {"GROUP", TokenType::GROUP},
+        {"HAVING", TokenType::HAVING}, {"AS", TokenType::AS},
+        {"AND", TokenType::AND}, {"OR", TokenType::OR},
+        {"IN", TokenType::IN}, {"LIKE", TokenType::LIKE},
+        {"IS", TokenType::IS}, {"BETWEEN", TokenType::BETWEEN},
+        {"COUNT", TokenType::COUNT}, {"SUM", TokenType::SUM},
+        {"MAX", TokenType::MAX}, {"MIN", TokenType::MIN},
+        {"AVG", TokenType::AVG}, {"IF", TokenType::IF},
+        {"EXISTS", TokenType::EXISTS}, {"JOIN", TokenType::JOIN},
+        {"INNER", TokenType::INNER}, {"LEFT", TokenType::LEFT},
+        {"RIGHT", TokenType::RIGHT}, {"OUTER", TokenType::OUTER},
+        {"CROSS", TokenType::CROSS}, {"TRUE", TokenType::BOOL_LITERAL},
+        {"FALSE", TokenType::BOOL_LITERAL}, {"BEGIN", TokenType::BEGIN},
+        {"COMMIT", TokenType::COMMIT}, {"ROLLBACK", TokenType::ROLLBACK},
+        {"TRANSACTION", TokenType::TRANSACTION}, {"GRANT", TokenType::GRANT},
+        {"REVOKE", TokenType::REVOKE}, {"ON", TokenType::ON},
+        {"TO", TokenType::TO}, {"WITH", TokenType::WITH},
+        {"OPTION", TokenType::OPTION}, {"ALL", TokenType::ALL},
+        {"PRIVILEGES", TokenType::PRIVILEGES}, {"USER", TokenType::USER},
+        {"PASSWORD", TokenType::PASSWORD}, {"CONNECT", TokenType::CONNECT},
+        {"IDENTIFIED", TokenType::IDENTIFIED}, {"BACKUP", TokenType::BACKUP},
+        {"RESTORE", TokenType::RESTORE},
+    };
+
+    for (const auto& [word, type] : cases) {
+        auto t = lex(word);
+        ASSERT_EQ(t.size(), (size_t)1);
+        ASSERT_EQ(t[0].type, type);
+    }
 }
 
 static void test_case_insensitive() {
@@ -210,6 +240,7 @@ static void test_bool_null() {
 // ============================================================
 int main() {
     test_keywords();
+    test_all_keywords_are_tokenized();
     test_case_insensitive();
     test_string_literal();
     test_string_escape();
